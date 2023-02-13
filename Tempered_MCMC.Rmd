@@ -1,0 +1,233 @@
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(ggpubr)
+library(coda)
+```
+
+```{r}
+#Target distribution of f, base on the conditional distribution of f given all other factors(n_ij,p_1,...,p_k). I choose this because this is the best approximation to the posterior of f.
+target<-function(x,X,t){
+  density<-1
+  if(x < -min(X[2:7])/(1-min(X[2:7])) || x>1)
+    return(0)
+  else
+     for(i in 1:6){
+       if(i < 6){
+         for(j in (i+1):6){
+           density<-density*(x+(1-x)*X[i+1])^N[i,i]*(1-x)^N[i,j]
+         }
+       }
+     }
+  return(density^(1/t))
+}
+
+#Temperature proposal function
+temp<-function(X,t){
+  t_new=0
+  G=runif(1)
+  if(G < 0.5){
+  t_p=t+1
+  } else{
+  t_p=t-1
+  }
+  #Because function 'integrate' only takes the first argument as a function with one numeric input, so create functions with only one input at each temperature to find the normalizing constants.
+  func1<-function(x){
+     density<-1
+    if(x < -min(X[2:7])/(1-min(X[2:7])) || x>1)
+      return(0)
+    else
+      for(i in 1:6){
+        if(i < 6){
+          for(j in (i+1):6){
+           density<-density*(x+(1-x)*X[i+1])^N[i,i]*(1-x)^N[i,j]
+          }
+        }
+      }
+  return(density^(1/t_p))
+  }
+  func2<-function(x){
+     density<-1
+    if(x < -min(X[2:7])/(1-min(X[2:7])) || x>1)
+      return(0)
+    else
+      for(i in 1:6){
+        if(i < 6){
+          for(j in (i+1):6){
+           density<-density*(x+(1-x)*X[i+1])^N[i,i]*(1-x)^N[i,j]
+          }
+        }
+      }
+  return(density^(1/t))
+  }
+  #Normalizing constants for pdf at each temperature
+  cf1<-integrate(func1,-min(X[2:7])/(1-min(X[2:7])),1)[[1]]
+  cf2<-integrate(func2,-min(X[2:7])/(1-min(X[2:7])),1)[[1]]
+  ratio2=(cf1*target(X[1],X,t_p))/(cf2*target(X[1],X,t))
+  if(is.na(ratio2)==FALSE){  
+    if(ratio2 >= 1){
+    t_new = t_new+t_p
+    } else{
+      C=runif(1)
+      if(C < ratio2){
+      t_new = t_new+t_p
+      } else{
+        t_new = t_new+t
+        }
+    }
+  } else{t_new = t_new+t}
+  return(t_new)
+}
+
+#Proposal distribution for p
+qq.p<-function(x,u,v,eps.p){
+   return(1/(min(x[u]+eps.p,x[u]+x[v])-max(0,x[u]-eps.p)))
+}
+
+#Log joint distribution at each temperature
+log.g<-function(X,N){
+  dens=0
+  k=length(X)-1
+  for (i in 1:k){
+    if (i < k){
+      for (j in (i+1):k){dens = dens+N[i,j]*log(2*X[i+1]*X[j+1]*(1-X[1]))}
+    }
+    else{dens = dens + N[i,i]*log(X[i+1]*(X[1]+(1-X[1])*X[i+1]))}
+  }
+  return(dens)
+}
+
+k<-6
+n<-1000
+f<-0.05
+k6<-c(0.02,0.06,0.075,0.085,0.21,0.55)
+P<-matrix(nrow=6,ncol=6)
+for (i in 1:6){
+  for (j in 1:6){
+    if (i==j){
+      P[i,j]<-k6[i]*(f+(1-f)*k6[i])
+    }
+    else {
+      P[i,j]<-2*k6[i]*k6[j]*(1-f)
+    }
+  }
+}
+N<-round(P*n)
+  
+sak6<-function(eps){
+  eps.p=eps
+  #Initial setup
+  X<-rep(0,7)
+  X[1]<-runif(1)
+  ps<-runif(6)
+  X[2:7]<-ps/sum(ps)
+  M=5000
+  B=500
+  numaccept=0
+  flist=rep(0,M)
+  #Create temperature list and set initial temperature to 100
+  tlist=rep(0,M+1)
+  tlist[1]<-100
+  for (m in 1:M){
+    t=tlist[m]
+    Y=X
+    r=sample(c(2,3,4,5,6,7),2)
+    u=r[1]
+    v=r[2]
+    #Propose new p_u,p_v
+    Y[u]=runif(1,max(0,Y[u]-eps.p),min(Y[u]+eps.p,Y[u]+Y[v]))
+    Y[v]=X[u]+X[v]-Y[u]
+    U=runif(1)
+    alpha=log.g(Y,N)+log(qq.p(X,u,v,eps.p))-log.g(X,N)-log(qq.p(Y,u,v,eps.p))
+    if(log(U) < alpha){
+      Z=Y
+      #Propose new f if and only if accept new p_u,p_v
+      f_p=rnorm(1,mean=Z[1],sd=1)
+      #At same temperature, the normalizing constannt cancelled out
+      ratio1=target(f_p,Z,t)/target(Z[1],Z,t)
+      if(is.na(ratio1)==FALSE){
+         if(ratio1 > 1){
+         Z[1]=f_p
+         X=Z
+         numaccept=numaccept+1
+         } else{
+           W=runif(1)
+           if(W < ratio1){
+           Z[1]=f_p
+           X=Z
+           numaccept=numaccept+1
+           } else{
+             X=Y
+             }
+           }
+    } else{
+    X=X
+      }
+    }
+    flist[m]=X[1]
+    #Propose new temperature
+    tlist[m+1]=temp(X,t)
+  }
+  estmean=mean(flist[(B+1):M])
+  se1=sd(flist[(B+1):M])/sqrt(M-B)
+  varfact<-function(xx){2*sum(acf(xx,plot=FALSE)$acf)-1}
+  se2=se1*sqrt(varfact(flist[(B+1):M]))
+  ci=c(estmean-1.96*se2,estmean+1.96*se2)
+  return(list(numaccept/M,estmean,ci,flist,M,B,se2))
+}  
+
+```
+
+Test epsilon
+```{r}
+set.seed(1)
+epslist=c(seq(0.001,0.01,0.001),seq(0.011,0.02,0.001))
+acclist=meanlist=cilblist=ciublist=selist=rep(0,20)
+for(i in 1:20){
+  tryCatch({
+    result<-sak6(epslist[i])
+    acclist[i]<-result[[1]]
+    meanlist[i]<-result[[2]]
+    cilblist[i]<-result[[3]][1]
+    ciublist[i]<-result[[3]][2]
+    selist[i]<-result[[7]]
+  }, error=function(e){})
+}
+results<-cbind(epslist,acclist,meanlist,cilblist,ciublist,selist)
+results<-as.data.frame(results)
+colnames(results)<-c('eps','Acceptance Rate','Mean','Lower bound','Upper bound','SE')
+#Seems like eps=0.004 has the best performance.
+```
+
+Plot
+```{r}
+set.seed(10)
+result<-sak6(0.004)
+flist<-result[[4]]
+M<-result[[5]]
+plot(flist[1:M],type = 'l')
+abline(h=0.05,col='red')
+```
+
+Normality test
+```{r}
+ggdensity(flist, main = 'Density of f', xlab = 'f')
+ggqqplot(flist)
+shapiro.test(flist)
+#Shapiro-Wilk test is significant, therefore can't assume normality. 
+```
+
+Convergence test
+```{r}
+#Gelman-Rubin diagnostic check(package:coda)
+result1<-sak6(0.004)
+flist1<-result[[4]]
+chain1=mcmc(flist1)
+result2<-sak6(0.004)
+flist2<-result[[4]]
+chain2=mcmc(flist2)
+combinedchains=mcmc.list(chain1,chain2)
+plot(combinedchains)
+gelman.diag(combinedchains)
+gelman.plot(combinedchains)
+```
